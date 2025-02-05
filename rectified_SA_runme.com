@@ -7,6 +7,7 @@ set seed = 1
 set temperature = 300
 set local_flag = ""
 set temperatures = ""
+set nseeds = 10
 
 set noise = 3.5
 set mapnoise = 3.5
@@ -16,6 +17,7 @@ set mtzfile = refme.mtz
 
 set parallel = 0
 set debug = 0
+set srun = srun
 
 set tempfile = /dev/shm/${USER}/temp_SA_$$_
 mkdir -p /dev/shm/${USER}
@@ -25,7 +27,7 @@ echo "command-line arguments: $* "
 foreach Arg ( $* )
     set arg = `echo $Arg | awk '{print tolower($0)}'`
     set assign = `echo $arg | awk '{print ( /=/ )}'`
-    set Key = `echo $Arg | awk -F "=" '{print tolower($1)}'`
+    set Key = `echo $Arg | awk -F "=" '{print $1}'`
     set Val = `echo $Arg | awk '{print substr($0,index($0,"=")+1)}'`
     set key = `echo $Key | awk '{print tolower($0)}'`
     set val = `echo $Val | awk '{print tolower($0)}'`
@@ -55,10 +57,16 @@ endif
 set t = "$tempfile"
 #touch $logfile
 
+set temperatures = `echo $temperatures | awk '{gsub("[,:K]"," ");print}'`
+
 if( ! -e "$pdbfile" ) then
   set BAD = "pdbfile $pdbfile does not exist"
   goto exit
 endif
+
+set oride
+if(-e overrides.txt) set oride = overridefile=overrides.txt
+echo $oride
 
 if( $parallel ) goto parallel
 
@@ -73,6 +81,7 @@ if( $debug < 5 ) then
     cp opts.eff  $local_tempdir >& /dev/null
     cp starthere_*.* $local_tempdir >& /dev/null
     cp *.cif $local_tempdir >& /dev/null
+    cp overrides.txt $local_tempdir >& /dev/null
     cp $pdbfile ${local_tempdir}/starthere.pdb
     cp $mtzfile ${local_tempdir}/refme.mtz
     cd $local_tempdir
@@ -83,7 +92,11 @@ endif
 if(! -e starthere_fullgeo.txt) then
 
    echo "molprobifying starthere"
-   molprobify_runme.com starthere.pdb keepgeo >! molprobify_starthere.log
+   molprobify_runme.com starthere.pdb keepgeo $oride >! molprobify_starthere.log
+   if( $status ) then
+     set BAD = "cannot score structrues without molprobify_runme.com"
+     goto exit
+   endif
 
 endif
 
@@ -152,7 +165,10 @@ endif
 
 # look for disimprovements
 echo "molprobify..."
-molprobify_runme.com phenix_${num}.pdb keepgeo >! molprobify_${itr}.log
+set oride
+if(-e overrides.txt) set oride = overridefile=overrides.txt
+molprobify_runme.com phenix_${num}.pdb keepgeo $oride >! molprobify_${itr}.log
+grep wE molprobify_${itr}.log
 
 awk '{print $0"| OLD"}' starthere_fullgeo.txt |\
 cat - phenix_${num}_fullgeo.txt |\
@@ -323,13 +339,18 @@ combine_pdbs_runme.com culled.pdb starthere.pdb printref=1 outfile=new.pdb >! co
 
 end
 
+echo "final refine run..."
+phenix.refine refme.mtz phenix_${num}.pdb opts.eff $ciffiles \
+  main.number_of_macro_cycles=10 \
+  prefix=phenix serial=1 >! phenix_final.log
+
 echo "finishing..."
-mv phenix_${num}.pdb phenix_${temperature}K_${seed}.pdb 
-mv phenix_${num}.mtz phenix_${temperature}K_${seed}.mtz 
+mv phenix_001.pdb phenix_${temperature}K_${seed}.pdb 
+mv phenix_001.mtz phenix_${temperature}K_${seed}.mtz 
 
 awk 'substr($0,77,2)!=" H"' starthere.pdb phenix_${temperature}K_${seed}.pdb | rmsd
 
-molprobify_runme.com phenix_${temperature}K_${seed}.pdb 
+molprobify_runme.com phenix_${temperature}K_${seed}.pdb $oride
 
 mkdir -p ${pwd}/pdbs
 cp phenix_${temperature}K_${seed}.pdb ${pwd}/pdbs
@@ -361,7 +382,7 @@ if(! -e ./rectified_SA_runme.com) then
   cp $0 ./rectified_SA_runme.com
 endif
 
-molprobify_runme.com starthere.pdb keepgeo |& tee molorobify_starthere.log
+molprobify_runme.com starthere.pdb keepgeo $oride |& tee molorobify_starthere.log
 
 set wE0 = `awk '/weighted energy/{print $NF;exit}' molorobify_starthere.log`
 
@@ -376,17 +397,18 @@ find logs -name 'trial_*.log' -exec rm -f \{\} \;
 echo "clearing old pdbs"
 find pdbs -name 'phenix_*.pdb' -exec rm -f \{\} \;
 
-#set temperatures = `awk 'BEGIN{for(T=2000;T<8000;T*=1.1)print int(T)}' | sort -u | sort -g`
+echo "temperatures: $temperatures"
 if ( $#temperatures <= 1 ) then
-  set temperatures = `awk 'BEGIN{for(T=1000;T<=6000;T+=1000)print int(T)}' | sort -u | sort -g`
+  set temperatures = `awk 'BEGIN{for(T=1000;T<=8000;T+=1000)print int(T)}' | sort -u | sort -g`
+  echo "using default temperatures: $temperatures"
 endif
 
 foreach temperature ( $temperatures )
 
-foreach s ( `seq 1 10` )
+foreach s ( `seq 1 $nseeds` )
 @ seed = ( $seed + 1 )
 
-srun ./rectified_SA_runme.com seed=$seed temperature=$temperature noise=$noise mapnoise=$mapnoise debug=$debug >! logs/trial_${temperature}K_${seed}.log &
+$srun ./rectified_SA_runme.com seed=$seed temperature=$temperature noise=$noise mapnoise=$mapnoise debug=$debug >! logs/trial_${temperature}K_${seed}.log &
 
 sleep 0.5
 
@@ -396,7 +418,7 @@ wait
 
 #append_file_date.com sorted.txt
 tail -n 1 logs/trial_* | awk 'NF>10{split($(NF-2),w,"_");print w[2],w[3],$1,$2,$3,$4,$12}' |\
- sort -k3gr | tee sorted.txt
+ sort -k4gr | tee sorted.txt
 cp sorted.txt sorted_${round}.txt 
 
 set temperature = `tail -n 1 sorted.txt | awk '{print $1}'`
@@ -410,7 +432,8 @@ cp $bestlog best_for_round${round}.log
 echo "tail of best log:"
 tail -100 $bestlog
 
-set wE = `awk '/weighted energy/{print $NF;exit}' $bestlog`
+#set wE0 = `awk '/weighted energy/{print $NF}' molorobify_starthere.log | tail -n 1`
+set wE = `awk '/weighted energy/{print $NF}' $bestlog | tail -n 1`
 
 
 set better = `echo $wE $wE0 | awk '{print ( $1 < $2 )}'`
@@ -419,19 +442,37 @@ if( $better ) then
   cp $bestpdb best_so_far.pdb
   cp $bestlog best_so_far.log
   cp best_so_far.pdb starthere.pdb
-  molprobify_runme.com starthere.pdb keepgeo |& tee molorobify_starthere.log
+  molprobify_runme.com starthere.pdb keepgeo $oride |& tee molorobify_starthere.log
 
   set wE0 = `awk '/weighted energy/{print $NF;exit}' molorobify_starthere.log`
   set since_better = 0
 else
+  echo "best run is not better than starting point"
   @ since_better = ( $since_better + 1 )
   grep weighted molorobify_starthere.log
 endif
 
 echo "$since_better rounds since wE got better"
 
-if(-e exit) exit
+if(-e ./exit) then
+   echo "exiting because ./exit exists"
+   rm ./exit
+   goto exit
+endif
 
 end
 
+
+exit:
+if($?BAD) then
+   echo "ERROR: $BAD"
+   exit 9
+endif
+
+# clean up
+if("$tempfile" == "") set  tempfile = "./"
+set tempdir = `dirname $tempfile`
+if(! $?debug && ! ( "$tempdir" == "." || "$tempdir" == "" ) ) then
+    rm -f ${tempfile}*
+endif
 
