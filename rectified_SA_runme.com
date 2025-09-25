@@ -1,10 +1,11 @@
 #! /bin/tcsh -f
 #
-#  do SA, but then clean up by taking any atoms that got worse and move them back     -James Holton 10-2-24
+#  do SA, but then clean up by taking any atoms that got worse and move them back     -James Holton 4-1-25
 #
 #
 set seed = 1
 set temperature = 300
+set final_wxc = 0.5
 set local_flag = ""
 set temperatures = ""
 set nseeds = 10
@@ -14,13 +15,16 @@ set mapnoise = 3.5
 
 set pdbfile = starthere.pdb
 set mtzfile = refme.mtz
+set ciffiles = "auto"
+set efffiles = opts.eff
 
 set parallel = 0
 set debug = 0
 set srun = srun
 
-set tempfile = /dev/shm/${USER}/temp_SA_$$_
-mkdir -p /dev/shm/${USER}
+set tempfile = ""
+
+set path = ( $path `dirname $0` )
 
 echo "command-line arguments: $* "
 
@@ -50,6 +54,25 @@ foreach Arg ( $* )
     if("$arg" == "debug") set debug = 1
     if("$arg" == "parallel") set parallel = 1
 end
+
+foreach dependency ( molprobify_runme.com combine_pdbs_runme.com )
+  echo -n "using: "
+  which $dependency 
+  if( $status ) then
+      set BAD = "cannot run without $dependency "
+      goto exit
+  endif
+end
+
+if( "$ciffiles" == "auto" ) then
+   # take any 3-letter-code cif files
+   set ciffiles = `ls -1rt ???.cif |& grep cif`
+   echo "selected cif files: $ciffiles"
+endif
+
+
+if ( "$tempfile" == "" ) set tempfile = /dev/shm/${USER}/temp_SA_${seed}_$$_
+mkdir -p `dirname $tempfile `
 
 if( $debug ) then
     set tempfile = tempfile
@@ -85,14 +108,14 @@ if( $debug < 5 ) then
     cp $pdbfile ${local_tempdir}/starthere.pdb
     cp $mtzfile ${local_tempdir}/refme.mtz
     cd $local_tempdir
-    echo "tempdir = $local_tempdir"
+    echo "local_tempdir = $local_tempdir"
 endif
 
 
 if(! -e starthere_fullgeo.txt) then
 
    echo "molprobifying starthere"
-   molprobify_runme.com starthere.pdb keepgeo $oride >! molprobify_starthere.log
+   molprobify_runme.com starthere.pdb keepgeo=1 debug=1 $oride $ciffiles >! molprobify_starthere.log
    if( $status ) then
      set BAD = "cannot score structrues without molprobify_runme.com"
      goto exit
@@ -117,8 +140,11 @@ refinement {
 EOF
 endif 
 
-# take any 3-letter-code cif files
-set ciffiles = `ls -1rt ???.cif |& grep cif`
+if( "$ciffiles" == "auto" ) then
+   # take any 3-letter-code cif files
+   set ciffiles = `ls -1rt ???.cif |& grep cif`
+   echo "selected cif files: $ciffiles"
+endif
 
 echo "runing simulated annealing in phenix"
 phenix.refine opts.eff refme.mtz starthere.pdb $ciffiles \
@@ -144,19 +170,25 @@ phenix.refine refme.mtz new.pdb adp.set_b_iso=20 opts.eff $ciffiles \
   main.number_of_macro_cycles=3 \
   prefix=phenix serial=1 >! phenix_${itr}_1.log
 
-echo "refine wxc_scale=0.1"
+echo "refine wxc_scale=10"
 phenix.refine refme.mtz phenix_001.pdb opts.eff $ciffiles \
-  wxc_scale=0.1 \
+  wxc_scale=10 \
   main.number_of_macro_cycles=5 \
   prefix=phenix serial=2 >! phenix_${itr}_2.log
 
-echo "refine wxc_scale=1"
+echo "refine wxc_scale=0.1"
 phenix.refine refme.mtz phenix_002.pdb opts.eff $ciffiles \
-  wxc_scale=1 \
+  wxc_scale=0.1 \
   main.number_of_macro_cycles=5 \
   prefix=phenix serial=3 >! phenix_${itr}_3.log
 
-set num = 003
+echo "refine wxc_scale=${final_wxc}"
+phenix.refine refme.mtz phenix_003.pdb opts.eff $ciffiles \
+  wxc_scale=${final_wxc} \
+  main.number_of_macro_cycles=5 \
+  prefix=phenix serial=4 >! phenix_${itr}_4.log
+
+set num = 004
 
 if(! -e phenix_${num}.pdb) then
   set BAD = "phenix refine failed: no phenix_${num}.pdb"
@@ -167,7 +199,7 @@ endif
 echo "molprobify..."
 set oride
 if(-e overrides.txt) set oride = overridefile=overrides.txt
-molprobify_runme.com phenix_${num}.pdb keepgeo $oride >! molprobify_${itr}.log
+molprobify_runme.com phenix_${num}.pdb keepgeo=1 $oride $ciffiles >! molprobify_${itr}.log
 grep wE molprobify_${itr}.log
 
 awk '{print $0"| OLD"}' starthere_fullgeo.txt |\
@@ -340,20 +372,23 @@ combine_pdbs_runme.com culled.pdb starthere.pdb printref=1 outfile=new.pdb >! co
 end
 
 echo "final refine run..."
-phenix.refine refme.mtz phenix_${num}.pdb opts.eff $ciffiles \
+phenix.refine refme.mtz new.pdb opts.eff $ciffiles \
   main.number_of_macro_cycles=10 \
   prefix=phenix serial=1 >! phenix_final.log
 
 echo "finishing..."
 mv phenix_001.pdb phenix_${temperature}K_${seed}.pdb 
+mv phenix_001.log phenix_${temperature}K_${seed}.log 
 mv phenix_001.mtz phenix_${temperature}K_${seed}.mtz 
 
 awk 'substr($0,77,2)!=" H"' starthere.pdb phenix_${temperature}K_${seed}.pdb | rmsd
 
-molprobify_runme.com phenix_${temperature}K_${seed}.pdb $oride
+molprobify_runme.com phenix_${temperature}K_${seed}.pdb $oride $ciffiles
 
 mkdir -p ${pwd}/pdbs
-cp phenix_${temperature}K_${seed}.pdb ${pwd}/pdbs
+foreach ext ( pdb mtz log )
+cp phenix_${temperature}K_${seed}.${ext} ${pwd}/pdbs
+end
 
 cd $pwd
 if(! $debug ) rm -rf ${local_tempdir}
@@ -382,7 +417,11 @@ if(! -e ./rectified_SA_runme.com) then
   cp $0 ./rectified_SA_runme.com
 endif
 
-molprobify_runme.com starthere.pdb keepgeo $oride |& tee molorobify_starthere.log
+molprobify_runme.com starthere.pdb keepgeo=1 $oride $ciffiles |& tee molorobify_starthere.log
+if( $status ) then
+  set BAD = "cannot score structrues without molprobify_runme.com"
+  goto exit
+endif
 
 set wE0 = `awk '/weighted energy/{print $NF;exit}' molorobify_starthere.log`
 
@@ -408,7 +447,8 @@ foreach temperature ( $temperatures )
 foreach s ( `seq 1 $nseeds` )
 @ seed = ( $seed + 1 )
 
-$srun ./rectified_SA_runme.com seed=$seed temperature=$temperature noise=$noise mapnoise=$mapnoise debug=$debug >! logs/trial_${temperature}K_${seed}.log &
+$srun ./rectified_SA_runme.com seed=$seed temperature=$temperature \
+   noise=$noise mapnoise=$mapnoise final_wxc=$final_wxc debug=$debug >! logs/trial_${temperature}K_${seed}.log &
 
 sleep 0.5
 
@@ -424,25 +464,28 @@ cp sorted.txt sorted_${round}.txt
 set temperature = `tail -n 1 sorted.txt | awk '{print $1}'`
 set seed = `tail -n 1 sorted.txt | awk '{print $2}'`
 
-set bestpdb = pdbs/phenix_${temperature}_${seed}.pdb
-set bestlog = logs/trial_${temperature}_${seed}.log
-cp $bestpdb best_for_round${round}.pdb
-cp $bestlog best_for_round${round}.log
+set bestphenix = pdbs/phenix_${temperature}_${seed}
+set besttrial = logs/trial_${temperature}_${seed}
+cp ${bestphenix}.pdb best_for_round${round}.pdb
+cp ${bestphenix}.log best_for_round${round}.log
+cp ${besttrial}.log best_for_round${round}_trial.log
 
 echo "tail of best log:"
-tail -100 $bestlog
+tail -100 ${besttrial}.log
 
 #set wE0 = `awk '/weighted energy/{print $NF}' molorobify_starthere.log | tail -n 1`
-set wE = `awk '/weighted energy/{print $NF}' $bestlog | tail -n 1`
+set wE = `awk '/weighted energy/{print $NF}' ${besttrial}.log | tail -n 1`
 
 
 set better = `echo $wE $wE0 | awk '{print ( $1 < $2 )}'`
 if( $better ) then
   echo "saving new best"
-  cp $bestpdb best_so_far.pdb
-  cp $bestlog best_so_far.log
+  cp ${bestphenix}.pdb best_so_far.pdb
+  cp ${bestphenix}.log best_so_far.log
+  cp ${bestphenix}.mtz best_so_far.mtz
+  cp ${besttrial}.log best_trial_so_far.log
   cp best_so_far.pdb starthere.pdb
-  molprobify_runme.com starthere.pdb keepgeo $oride |& tee molorobify_starthere.log
+  molprobify_runme.com starthere.pdb keepgeo=1 $oride $ciffiles |& tee molorobify_starthere.log
 
   set wE0 = `awk '/weighted energy/{print $NF;exit}' molorobify_starthere.log`
   set since_better = 0
@@ -466,6 +509,7 @@ end
 exit:
 if($?BAD) then
    echo "ERROR: $BAD"
+   echo "tempdir = $tempdir"
    exit 9
 endif
 
