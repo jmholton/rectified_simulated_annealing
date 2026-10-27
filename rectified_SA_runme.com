@@ -12,6 +12,8 @@ set nseeds = 10
 
 set noise = 3.5
 set mapnoise = 3.5
+# C-beta deviations are 3D distances: per-component sigma (A) of the chi(3) deviate, calibrated on correct models (wE v2)
+set cbsigma = 0.032
 
 # memory of good models: every accepted model is kept in memory/ (ledger.txt: round wE Rwork Rfree file)
 # and the winner of each round is checked against all of them for atoms that crept out of density
@@ -295,27 +297,32 @@ cat >! revert_clashes.txt
 # format: chainresnum | REVERTRES
 
 
+# C-beta deviation: revert the residue conformer only if it got worse AND is beyond noise.  The deviation is a 3D distance,
+# so x = dev/cbsigma is a chi(3) deviate; judge it by the Gaussian deviate with the same two-sided tail probability (wE v2):
+#   P(>x) = erfc(x/sqrt(2)) + sqrt(2/pi) x exp(-x^2/2) < erfc(noise/sqrt(2)),  i.e. dev > 0.135 A for noise=3.5, cbsigma=0.032
 cat phenix_${num}_cbetadev.log |\
- awk -F ":" '! /^SUMM|^pdb/{energy=($6/0.05)**2;\
-   f=$2;c=$4;r=$5;\
+ awk -F ":" '! /^SUMM|^pdb/ && NF>5{f=$2;c=$4;r=$5;\
    if(f==" ")f="_";if(c==" ")c="_";\
-   print energy,f,c,r,"NEW"}' |\
+   print $6+0,f,c,r,"NEW"}' |\
 cat >! cbetadevs.txt
-# format: E conf resnum NEW
-
 cat starthere_cbetadev.log |\
- awk -F ":" '! /^SUMM|^pdb/{energy=($6/0.05)**2;\
-   f=$2;c=$4;r=$5;\
+ awk -F ":" '! /^SUMM|^pdb/ && NF>5{f=$2;c=$4;r=$5;\
    if(f==" ")f="_";if(c==" ")c="_";\
-   id=f" "c" "r;\
-   print energy,id,"OLD"}' |\
+   print $6+0,f,c,r,"OLD"}' |\
 cat >> cbetadevs.txt
-sort -g cbetadevs.txt |\
-awk '{f=$2;c=$3;r=$4;\
-   if(f==" ")f="_";if(c==" ")c="_";\
-  id=f" "c" "r;} \
-  ! seen[id] && /OLD/{printf("%s %s%4d | REVERTCONF\n",f,c,r)}\
- {++seen[id]}' |\
+# format: dev conf chain resnum NEW/OLD
+cat cbetadevs.txt |\
+awk -v noise=$noise -v cbsigma=$cbsigma '\
+ function erfc(x,  z,t,a){z=(x<0?-x:x);t=1/(1+0.5*z);\
+   a=t*exp(-z*z-1.26551223+t*(1.00002368+t*(0.37409196+t*(0.09678418+t*(-0.18628806+t*(0.27886807+t*(-1.13520398+t*(1.48851587+t*(-0.82215223+t*0.17087277)))))))));\
+   return (x>=0?a:2-a)}\
+ function pchi3(x){return erfc(x/sqrt(2))+sqrt(2/3.14159265358979)*x*exp(-x*x/2)}\
+ BEGIN{pnoise=erfc(noise/sqrt(2))}\
+ {id=$2" "$3" "$4}\
+ $NF=="OLD"{old[id]=$1;next}\
+ $NF=="NEW"{new[id]=$1}\
+ END{for(id in new) if((id in old) && new[id]>old[id] && pchi3(new[id]/cbsigma)<pnoise){\
+   split(id,w," ");printf("%s %s%4d | REVERTCONF\n",w[1],w[2],w[3])}}' |\
 cat >! revert_cbetadev.txt
 # format: conf chainresnum | REVERTCONF
 
@@ -361,7 +368,7 @@ echo "reverting $badatoms bad entities"
 cat revert_*.txt phenix_${num}.pdb |\
 awk '$NF=="REVERT"{++bad[substr($0,1,20)];next}\
   $NF=="REVERTRES"{++bad[substr($0,1,6)];next}\
-  $NF=="REVERCONF"{++bad[substr($0,1,7)];next}\
+  $NF=="REVERTCONF"{++bad[substr($0,1,8)];next}\
   ! /^ATOM|^HETAT/{next}\
   {id=substr($0,13,15);\
   a=substr(id,1,4);\
@@ -469,7 +476,7 @@ foreach s ( `seq 1 $nseeds` )
 @ seed = ( $seed + 1 )
 
 $srun ./rectified_SA_runme.com seed=$seed temperature=$temperature \
-   noise=$noise mapnoise=$mapnoise final_wxc=$final_wxc debug=$debug >! logs/trial_${temperature}K_${seed}.log &
+   noise=$noise mapnoise=$mapnoise cbsigma=$cbsigma final_wxc=$final_wxc debug=$debug >! logs/trial_${temperature}K_${seed}.log &
 
 sleep 0.5
 
