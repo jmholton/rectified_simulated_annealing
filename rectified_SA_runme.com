@@ -13,6 +13,12 @@ set nseeds = 10
 set noise = 3.5
 set mapnoise = 3.5
 
+# memory of good models: every accepted model is kept in memory/ (ledger.txt: round wE Rwork Rfree file)
+# and the winner of each round is checked against all of them for atoms that crept out of density
+set memory = 1
+# a trial is eligible only if its Rfree (%) is within this much of the lowest Rfree in memory (negative: no limit)
+set rfree_slack = 0.2
+
 set pdbfile = starthere.pdb
 set mtzfile = refme.mtz
 set ciffiles = "auto"
@@ -60,7 +66,9 @@ foreach Arg ( $* )
     if("$arg" == "parallel") set parallel = 1
 end
 
-foreach dependency ( molprobify_runme.com combine_pdbs_runme.com )
+set dependencies = ( molprobify_runme.com combine_pdbs_runme.com )
+if( $parallel && $memory ) set dependencies = ( $dependencies memory_repair_runme.com )
+foreach dependency ( $dependencies )
   echo -n "using: "
   which $dependency 
   if( $status ) then
@@ -430,6 +438,14 @@ endif
 
 set wE0 = `awk '/weighted energy/{print $NF;exit}' molorobify_starthere.log`
 
+# remember the starting model
+mkdir -p memory
+if(! -e memory/ledger.txt) then
+  cp starthere.pdb memory/round${round}.pdb
+  tail -n 1 molorobify_starthere.log |\
+  awk -v r=$round -v wE=$wE0 '{print r,wE,$3,$4,"memory/round" r ".pdb"}' >! memory/ledger.txt
+endif
+
 set since_better = 0
 while ( $since_better < 10 )
 
@@ -466,8 +482,20 @@ tail -n 1 logs/trial_* | awk 'NF>10{split($(NF-2),w,"_");print w[2],w[3],$1,$2,$
  sort -k4gr | tee sorted.txt
 cp sorted.txt sorted_${round}.txt 
 
-set temperature = `tail -n 1 sorted.txt | awk '{print $1}'`
-set seed = `tail -n 1 sorted.txt | awk '{print $2}'`
+# only trials that fit the data about as well as the best remembered model are eligible
+set rmin = `awk '$4+0>0{print $4}' memory/ledger.txt | sort -g | head -n 1`
+if( "$rmin" == "" ) set rmin = `awk '$6+0>0{print $6}' sorted.txt | sort -g | head -n 1`
+awk -v rmin=$rmin -v slack=$rfree_slack 'slack<0 || ( $6+0>0 && $6+0<=rmin+slack )' sorted.txt >! eligible.txt
+cp eligible.txt eligible_${round}.txt
+echo "lowest remembered Rfree: $rmin %  eligible trials (Rfree <= $rmin + $rfree_slack): `cat eligible.txt | wc -l` of `cat sorted.txt | wc -l`"
+
+if( -z eligible.txt ) then
+  echo "no trial fits the data within $rfree_slack % of the best remembered model"
+  @ since_better = ( $since_better + 1 )
+else
+
+set temperature = `tail -n 1 eligible.txt | awk '{print $1}'`
+set seed = `tail -n 1 eligible.txt | awk '{print $2}'`
 
 set bestphenix = pdbs/phenix_${temperature}_${seed}
 set besttrial = logs/trial_${temperature}_${seed}
@@ -480,16 +508,61 @@ tail -100 ${besttrial}.log
 
 #set wE0 = `awk '/weighted energy/{print $NF}' molorobify_starthere.log | tail -n 1`
 set wE = `awk '/weighted energy/{print $NF}' ${besttrial}.log | tail -n 1`
+set candidate = ${bestphenix}
+set candR = `tail -n 1 eligible.txt | awk '{print $5, $6}'`
 
+if( $memory ) then
+  # put back residue conformers that have crept out of density since an earlier, remembered model
+  echo "checking the winner against `ls -1 memory/round*.pdb | wc -l` remembered models"
+  memory_repair_runme.com ${bestphenix}.pdb ${bestphenix}.mtz memory/round*.pdb \
+     mapnoise=$mapnoise outfile=repair_${round}.pdb >&! repair_${round}.log
+  grep -E '^restore|^ERROR' repair_${round}.log
+  set nrestore = `awk '/^restored residue-conformers:/{print $NF}' repair_${round}.log`
+  if( "$nrestore" != "" && "$nrestore" != "0" ) then
+    echo "refining the repaired model"
+    mkdir -p repairs
+    set rnum = `echo $round | awk '{printf("%03d",$1)}'`
+    set cifs = ""
+    foreach cif ( $ciffiles )
+      set cifs = ( $cifs ../$cif )
+    end
+    set roride = ""
+    if(-e overrides.txt) set roride = overridefile=../overrides.txt
+    ( cd repairs ; \
+      $srun phenix.refine ../refme.mtz ../repair_${round}.pdb ../opts.eff $cifs \
+        main.number_of_macro_cycles=10 \
+        prefix=repaired serial=$round >&! refine_${rnum}.log ; \
+      molprobify_runme.com repaired_${rnum}.pdb $roride $cifs >&! molprobify_${rnum}.log )
+    if( -e repairs/repaired_${rnum}.pdb ) then
+      set rwE = `awk '/weighted energy/{print $NF}' repairs/molprobify_${rnum}.log | tail -n 1`
+      set rR = `tail -n 1 repairs/molprobify_${rnum}.log | awk '{print $3, $4}'`
+      set rpass = `tail -n 1 repairs/molprobify_${rnum}.log | awk -v rmin=$rmin -v slack=$rfree_slack '{print ( slack<0 || ( $4+0>0 && $4+0<=rmin+slack ) )}'`
+      echo "repaired: wE $rwE  R/Rfree $rR   unrepaired: wE $wE  R/Rfree $candR"
+      if( "$rwE" != "" && "$rpass" == "1" ) then
+        set wE = $rwE
+        set candR = ( $rR )
+        set candidate = repairs/repaired_${rnum}
+      else
+        echo "the repaired model does not fit the data well enough, keeping the winner as it is"
+      endif
+    else
+      echo "refinement of the repaired model failed, keeping the winner as it is"
+    endif
+  endif
+endif
 
 set better = `echo $wE $wE0 | awk '{print ( $1 < $2 )}'`
 if( $better ) then
   echo "saving new best"
-  cp ${bestphenix}.pdb best_so_far.pdb
-  cp ${bestphenix}.log best_so_far.log
-  cp ${bestphenix}.mtz best_so_far.mtz
+  cp ${candidate}.pdb best_so_far.pdb
+  cp ${candidate}.log best_so_far.log
+  cp ${candidate}.mtz best_so_far.mtz
   cp ${besttrial}.log best_trial_so_far.log
   cp best_so_far.pdb starthere.pdb
+  if( $memory ) then
+    cp best_so_far.pdb memory/round${round}.pdb
+    echo "$round $wE $candR memory/round${round}.pdb" >> memory/ledger.txt
+  endif
   molprobify_runme.com starthere.pdb keepgeo=1 $oride $ciffiles |& tee molorobify_starthere.log
 
   set wE0 = `awk '/weighted energy/{print $NF;exit}' molorobify_starthere.log`
@@ -498,6 +571,8 @@ else
   echo "best run is not better than starting point"
   @ since_better = ( $since_better + 1 )
   grep weighted molorobify_starthere.log
+endif
+
 endif
 
 echo "$since_better rounds since wE got better"
