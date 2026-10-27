@@ -20,16 +20,18 @@ Simulated annealing (SA) refinement is a great way to help your model escape fro
 
 * These are linux c-shell scripts, so you will need a working `/bin/tcsh`
 * the SA and other operations are performed using the Phenix Suite, which must be installed.
-* The molprobify_runme.com script must also be installed.
+* The helper scripts `molprobify_runme.com`, `combine_pdbs_runme.com` and `rmsd` ship with this repo.
 
 ### Installing
 
 * git clone this repo
-* copy the *.com files into somewhere in your shell `$PATH`, and make them executable:
+* put the repo directory in your shell `$PATH` (or copy all the scripts, `rmsd` included, into one directory that is), and make them executable:
 ```
     chmod u+x *.com
 ```
 Yes, I know the extension says `*.com`, but these are not Windows executables. The use of `.com` to denote shell scripts pre-dates Windows.
+
+The parent puts its own directory at the front of the path it hands to the trials (`$RSA_HOME`), so the helpers in the repo are used even if other copies are in your `$PATH`.
 
 ### Executing program
 

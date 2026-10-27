@@ -24,7 +24,12 @@ set srun = srun
 
 set tempfile = ""
 
-set path = ( $path `dirname $0` )
+# the helper scripts that ship with this one come first in the path, and the trials (which run as ./rectified_SA_runme.com) inherit it
+if(! $?RSA_HOME) then
+  set rsa_home = `dirname $0`
+  setenv RSA_HOME `cd $rsa_home ; pwd`
+endif
+set path = ( $RSA_HOME $path )
 
 echo "command-line arguments: $* "
 
