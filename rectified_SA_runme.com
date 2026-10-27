@@ -68,6 +68,15 @@ foreach Arg ( $* )
     if("$arg" == "parallel") set parallel = 1
 end
 
+# tcsh reads its script from disk as it runs, so editing this file (or switching git branches) under a running parent
+# changes what it does mid-round.  The parent therefore runs from a private copy in the working directory.
+if( $parallel && ! $?RSA_PARENT_COPY ) then
+  setenv RSA_PARENT_COPY ./rectified_SA_parent.com
+  cp $0 $RSA_PARENT_COPY
+  echo "running the parent from a private copy: $RSA_PARENT_COPY"
+  exec tcsh -f $RSA_PARENT_COPY $*
+endif
+
 set dependencies = ( molprobify_runme.com combine_pdbs_runme.com )
 if( $parallel && $memory ) set dependencies = ( $dependencies memory_repair_runme.com )
 foreach dependency ( $dependencies )
