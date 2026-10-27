@@ -20,7 +20,7 @@ Simulated annealing (SA) refinement is a great way to help your model escape fro
 
 * These are linux c-shell scripts, so you will need a working `/bin/tcsh`
 * the SA and other operations are performed using the Phenix Suite, which must be installed.
-* The helper scripts `molprobify_runme.com`, `combine_pdbs_runme.com`, `rmsd` and `memory_repair_runme.com` ship with this repo.
+* The helper scripts `molprobify_runme.com`, `combine_pdbs_runme.com`, `rmsd`, `memory_repair_runme.com` and `reset_waters_runme.com` ship with this repo.
 
 ### Installing
 
@@ -47,11 +47,12 @@ This will serve as a good test to see if everything is working. Success is indic
 - temperature     simulation temperature to use, 2000 to 5000K is typical, but default is 300
 - noise   the sigma deviate in density or geometry score that is considered small enough to be noise. default: 3
 - cbsigma  per-component sigma (A) of a C-beta deviation. The deviation is a 3D distance, so dev/cbsigma is scored as a chi deviate with 3 degrees of freedom, converted to the Gaussian deviate with the same tail probability; a residue conformer whose C-beta deviation got worse and is beyond `noise` sigma is put back (0.135 A at the defaults). default: 0.032, the rms/sqrt(3) of the C-beta deviations of correct models
+- water_sigma  hold the waters: before every refinement each water is put back at its position in `water_reference.pdb` (written by the parallel parent from the first remembered model; a trial run on its own uses its own `starthere.pdb`) and held there by a harmonic restraint of this sigma (A) through the simulated annealing and every refinement. wE has no term that holds a water, and above ~5000 K the annealing scatters them (1aho: ~100 of 154 waters > 1 A at 6000 K, none with the restraint). 0 = off. default: 0.1
 - debug    keep all intermediate files for debugging purposes
 
 #### the parallel parent script
 Run `rectified_SA_runme.com parallel=1` in a directory containing `starthere.pdb`, `refme.mtz` and `opts.eff`. Each round runs 80 trials (1000 to 8000 K, 10 seeds each, via `srun`), takes the best eligible trial as the next `starthere.pdb` if its wE is lower, and stops after 10 rounds without improvement or when a file called `exit` appears. Options for the parent:
-- noise, mapnoise, cbsigma  passed to the trials (defaults: 3.5, 3.5, 0.032)
+- noise, mapnoise, cbsigma, water_sigma  passed to the trials (defaults: 3.5, 3.5, 0.032, 0.1); the repair refinement holds the waters too
 - nseeds    seeds per temperature (default: 10)
 - temperatures  comma-separated list (default: 1000,2000,...,8000)
 - memory    keep every accepted model in `memory/` and check each round's winner against all of them (default: 1)

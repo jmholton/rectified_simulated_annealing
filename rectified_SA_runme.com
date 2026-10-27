@@ -20,6 +20,10 @@ set cbsigma = 0.032
 set memory = 1
 # a trial is eligible only if its Rfree (%) is within this much of the lowest Rfree in memory (negative: no limit)
 set rfree_slack = 0.2
+# hold every water near its position in the first remembered model (the start of the whole run): before each refinement the
+# waters are put back there and restrained by a harmonic restraint of this sigma (A); 0 = off.  wE has no stake in the waters,
+# so nothing else holds them, and above ~5000 K the simulated annealing scatters them (1aho: 100 of 154 move > 1 A at 6000 K)
+set water_sigma = 0.1
 
 set pdbfile = starthere.pdb
 set mtzfile = refme.mtz
@@ -77,7 +81,7 @@ if( $parallel && ! $?RSA_PARENT_COPY ) then
   exec tcsh -f $RSA_PARENT_COPY $*
 endif
 
-set dependencies = ( molprobify_runme.com combine_pdbs_runme.com )
+set dependencies = ( molprobify_runme.com combine_pdbs_runme.com reset_waters_runme.com )
 if( $parallel && $memory ) set dependencies = ( $dependencies memory_repair_runme.com )
 foreach dependency ( $dependencies )
   echo -n "using: "
@@ -129,6 +133,7 @@ if( $debug < 5 ) then
     cp starthere_*.* $local_tempdir >& /dev/null
     cp *.cif $local_tempdir >& /dev/null
     cp overrides.txt $local_tempdir >& /dev/null
+    cp water_reference.pdb $local_tempdir >& /dev/null
     cp $pdbfile ${local_tempdir}/starthere.pdb
     cp $mtzfile ${local_tempdir}/refme.mtz
     cd $local_tempdir
@@ -170,8 +175,30 @@ if( "$ciffiles" == "auto" ) then
    echo "selected cif files: $ciffiles"
 endif
 
+# hold the waters: put them back at water_reference.pdb before every refinement and restrain them there
+set holdwat = ""
+set hold = `echo $water_sigma | awk '{print ($1+0>0)}'`
+if( $hold && ! -e water_reference.pdb ) then
+  # a trial run on its own (the parallel parent supplies the reference of the whole run) holds the waters of its start
+  awk '/^ATOM|^HETATM/ && substr($0,18,3)=="HOH"' starthere.pdb >! water_reference.pdb
+  echo "no water_reference.pdb: holding the waters of starthere.pdb"
+endif
+if( $hold ) then
+  cat << EOF >! hold_waters.eff
+refinement.pdb_interpretation.reference_coordinate_restraints {
+  enabled = True
+  exclude_outliers = False
+  selection = "water"
+  sigma = $water_sigma
+  limit = 10
+}
+EOF
+  set holdwat = hold_waters.eff
+  reset_waters_runme.com water_reference.pdb starthere.pdb
+endif
+
 echo "runing simulated annealing in phenix"
-phenix.refine opts.eff refme.mtz starthere.pdb $ciffiles \
+phenix.refine opts.eff $holdwat refme.mtz starthere.pdb $ciffiles \
  simulated_annealing.random_seed=$seed \
  prefix=simanneal serial=1 \
  simulated_annealing=True \
@@ -189,25 +216,26 @@ cp simanneal_001.pdb new.pdb
 foreach itr ( 1 2 3 4 5 )
 
 echo "refine $itr"
-phenix.refine refme.mtz new.pdb adp.set_b_iso=20 opts.eff $ciffiles \
+if( $hold ) reset_waters_runme.com water_reference.pdb new.pdb
+phenix.refine refme.mtz new.pdb adp.set_b_iso=20 opts.eff $holdwat $ciffiles \
   wxc_scale=1 \
   main.number_of_macro_cycles=3 \
   prefix=phenix serial=1 >! phenix_${itr}_1.log
 
 echo "refine wxc_scale=10"
-phenix.refine refme.mtz phenix_001.pdb opts.eff $ciffiles \
+phenix.refine refme.mtz phenix_001.pdb opts.eff $holdwat $ciffiles \
   wxc_scale=10 \
   main.number_of_macro_cycles=5 \
   prefix=phenix serial=2 >! phenix_${itr}_2.log
 
 echo "refine wxc_scale=0.1"
-phenix.refine refme.mtz phenix_002.pdb opts.eff $ciffiles \
+phenix.refine refme.mtz phenix_002.pdb opts.eff $holdwat $ciffiles \
   wxc_scale=0.1 \
   main.number_of_macro_cycles=5 \
   prefix=phenix serial=3 >! phenix_${itr}_3.log
 
 echo "refine wxc_scale=${final_wxc}"
-phenix.refine refme.mtz phenix_003.pdb opts.eff $ciffiles \
+phenix.refine refme.mtz phenix_003.pdb opts.eff $holdwat $ciffiles \
   wxc_scale=${final_wxc} \
   main.number_of_macro_cycles=5 \
   prefix=phenix serial=4 >! phenix_${itr}_4.log
@@ -401,7 +429,8 @@ combine_pdbs_runme.com culled.pdb starthere.pdb printref=1 outfile=new.pdb >! co
 end
 
 echo "final refine run..."
-phenix.refine refme.mtz new.pdb opts.eff $ciffiles \
+if( $hold ) reset_waters_runme.com water_reference.pdb new.pdb
+phenix.refine refme.mtz new.pdb opts.eff $holdwat $ciffiles \
   main.number_of_macro_cycles=10 \
   prefix=phenix serial=1 >! phenix_final.log
 
@@ -462,6 +491,26 @@ if(! -e memory/ledger.txt) then
   awk -v r=$round -v wE=$wE0 '{print r,wE,$3,$4,"memory/round" r ".pdb"}' >! memory/ledger.txt
 endif
 
+# the water reference: waters of the first remembered model (the start of the whole run), kept across restarts
+set hold = `echo $water_sigma | awk '{print ($1+0>0)}'`
+if( $hold && ! -e water_reference.pdb ) then
+  set first = `awk 'NR==1{print $5}' memory/ledger.txt`
+  if( ! -e "$first" ) set first = starthere.pdb
+  awk '/^ATOM|^HETATM/ && substr($0,18,3)=="HOH"' $first >! water_reference.pdb
+  echo "holding `grep -c . water_reference.pdb` water atoms near their positions in $first (sigma $water_sigma A)"
+endif
+if( $hold ) then
+  cat << EOF >! hold_waters.eff
+refinement.pdb_interpretation.reference_coordinate_restraints {
+  enabled = True
+  exclude_outliers = False
+  selection = "water"
+  sigma = $water_sigma
+  limit = 10
+}
+EOF
+endif
+
 set since_better = 0
 while ( $since_better < 10 )
 
@@ -485,7 +534,7 @@ foreach s ( `seq 1 $nseeds` )
 @ seed = ( $seed + 1 )
 
 $srun ./rectified_SA_runme.com seed=$seed temperature=$temperature \
-   noise=$noise mapnoise=$mapnoise cbsigma=$cbsigma final_wxc=$final_wxc debug=$debug >! logs/trial_${temperature}K_${seed}.log &
+   noise=$noise mapnoise=$mapnoise cbsigma=$cbsigma water_sigma=$water_sigma final_wxc=$final_wxc debug=$debug >! logs/trial_${temperature}K_${seed}.log &
 
 sleep 0.5
 
@@ -544,8 +593,13 @@ if( $memory ) then
     end
     set roride = ""
     if(-e overrides.txt) set roride = overridefile=../overrides.txt
+    set rhold = ""
+    if( $hold ) then
+      reset_waters_runme.com water_reference.pdb repair_${round}.pdb
+      set rhold = ../hold_waters.eff
+    endif
     ( cd repairs ; \
-      $srun phenix.refine ../refme.mtz ../repair_${round}.pdb ../opts.eff $cifs \
+      $srun phenix.refine ../refme.mtz ../repair_${round}.pdb ../opts.eff $rhold $cifs \
         main.number_of_macro_cycles=10 \
         prefix=repaired serial=$round >&! refine_${rnum}.log ; \
       molprobify_runme.com repaired_${rnum}.pdb $roride $cifs >&! molprobify_${rnum}.log )
