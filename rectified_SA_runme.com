@@ -24,6 +24,9 @@ set rfree_slack = 0.2
 # waters are put back there and restrained by a harmonic restraint of this sigma (A); 0 = off.  wE has no stake in the waters,
 # so nothing else holds them, and above ~5000 K the simulated annealing scatters them (1aho: 100 of 154 move > 1 A at 6000 K)
 set water_sigma = 0.1
+# free: the reference holds the water SITES, and each split water takes whichever A/B labelling clashes least with its current
+# neighbours (a held water whose letter disagrees with a tangled neighbour otherwise pins that clash); same: hold the letters too
+set water_labels = free
 
 set pdbfile = starthere.pdb
 set mtzfile = refme.mtz
@@ -194,7 +197,7 @@ refinement.pdb_interpretation.reference_coordinate_restraints {
 }
 EOF
   set holdwat = hold_waters.eff
-  reset_waters_runme.com water_reference.pdb starthere.pdb
+  reset_waters_runme.com water_reference.pdb starthere.pdb labels=$water_labels
 endif
 
 echo "runing simulated annealing in phenix"
@@ -216,7 +219,7 @@ cp simanneal_001.pdb new.pdb
 foreach itr ( 1 2 3 4 5 )
 
 echo "refine $itr"
-if( $hold ) reset_waters_runme.com water_reference.pdb new.pdb
+if( $hold ) reset_waters_runme.com water_reference.pdb new.pdb labels=$water_labels
 phenix.refine refme.mtz new.pdb adp.set_b_iso=20 opts.eff $holdwat $ciffiles \
   wxc_scale=1 \
   main.number_of_macro_cycles=3 \
@@ -429,7 +432,7 @@ combine_pdbs_runme.com culled.pdb starthere.pdb printref=1 outfile=new.pdb >! co
 end
 
 echo "final refine run..."
-if( $hold ) reset_waters_runme.com water_reference.pdb new.pdb
+if( $hold ) reset_waters_runme.com water_reference.pdb new.pdb labels=$water_labels
 phenix.refine refme.mtz new.pdb opts.eff $holdwat $ciffiles \
   main.number_of_macro_cycles=10 \
   prefix=phenix serial=1 >! phenix_final.log
@@ -534,7 +537,7 @@ foreach s ( `seq 1 $nseeds` )
 @ seed = ( $seed + 1 )
 
 $srun ./rectified_SA_runme.com seed=$seed temperature=$temperature \
-   noise=$noise mapnoise=$mapnoise cbsigma=$cbsigma water_sigma=$water_sigma final_wxc=$final_wxc debug=$debug >! logs/trial_${temperature}K_${seed}.log &
+   noise=$noise mapnoise=$mapnoise cbsigma=$cbsigma water_sigma=$water_sigma water_labels=$water_labels final_wxc=$final_wxc debug=$debug >! logs/trial_${temperature}K_${seed}.log &
 
 sleep 0.5
 
@@ -595,7 +598,7 @@ if( $memory ) then
     if(-e overrides.txt) set roride = overridefile=../overrides.txt
     set rhold = ""
     if( $hold ) then
-      reset_waters_runme.com water_reference.pdb repair_${round}.pdb
+      reset_waters_runme.com water_reference.pdb repair_${round}.pdb labels=$water_labels
       set rhold = ../hold_waters.eff
     endif
     ( cd repairs ; \

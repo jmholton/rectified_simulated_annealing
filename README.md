@@ -48,11 +48,12 @@ This will serve as a good test to see if everything is working. Success is indic
 - noise   the sigma deviate in density or geometry score that is considered small enough to be noise. default: 3
 - cbsigma  per-component sigma (A) of a C-beta deviation. The deviation is a 3D distance, so dev/cbsigma is scored as a chi deviate with 3 degrees of freedom, converted to the Gaussian deviate with the same tail probability; a residue conformer whose C-beta deviation got worse and is beyond `noise` sigma is put back (0.135 A at the defaults). default: 0.032, the rms/sqrt(3) of the C-beta deviations of correct models
 - water_sigma  hold the waters: before every refinement each water is put back at its position in `water_reference.pdb` (written by the parallel parent from the first remembered model; a trial run on its own uses its own `starthere.pdb`) and held there by a harmonic restraint of this sigma (A) through the simulated annealing and every refinement. wE has no term that holds a water, and above ~5000 K the annealing scatters them (1aho: ~100 of 154 waters > 1 A at 6000 K, none with the restraint). 0 = off. default: 0.1
+- water_labels  free: the reference holds the water sites, not their conformer letters; at every reset each water split into A and B goes back onto its two reference sites and takes whichever A/B labelling overlaps least with its current same-conformer neighbours (contact distances from the scorer's nonbond and clash limits), so a held water follows its neighbours as they untangle. same: hold the letters too (the behaviour of 0ed9482; on 1aho Level 9 it froze clashes such as HOH46 A - HOH70 A at 1.44 A and cost ~25 wE per round). default: free
 - debug    keep all intermediate files for debugging purposes
 
 #### the parallel parent script
 Run `rectified_SA_runme.com parallel=1` in a directory containing `starthere.pdb`, `refme.mtz` and `opts.eff`. Each round runs 80 trials (1000 to 8000 K, 10 seeds each, via `srun`), takes the best eligible trial as the next `starthere.pdb` if its wE is lower, and stops after 10 rounds without improvement or when a file called `exit` appears. Options for the parent:
-- noise, mapnoise, cbsigma, water_sigma  passed to the trials (defaults: 3.5, 3.5, 0.032, 0.1); the repair refinement holds the waters too
+- noise, mapnoise, cbsigma, water_sigma, water_labels  passed to the trials (defaults: 3.5, 3.5, 0.032, 0.1, free); the repair refinement holds the waters too
 - nseeds    seeds per temperature (default: 10)
 - temperatures  comma-separated list (default: 1000,2000,...,8000)
 - memory    keep every accepted model in `memory/` and check each round's winner against all of them (default: 1)
