@@ -202,11 +202,14 @@ if(-e overrides.txt) set oride = overridefile=overrides.txt
 molprobify_runme.com phenix_${num}.pdb keepgeo=1 $oride $ciffiles >! molprobify_${itr}.log
 grep wE molprobify_${itr}.log
 
+# a term the start did not have (a new contact, mostly) counts from 0, so it is reverted only if it is beyond noise.  Before
+# 29 Oct 2026 its empty old value shifted the columns and "$4>noise" compared the string "|" with noise: every new term passed,
+# however small (1aho: 61 of 464 terms, down to 0.01 sigma, in one 6000 K trial), and any residue that moved got sent back
 awk '{print $0"| OLD"}' starthere_fullgeo.txt |\
 cat - phenix_${num}_fullgeo.txt |\
 awk '{split($0,w,"|");ent=w[2]}\
  $NF=="OLD"{oldv[ent,$1]=$2;next}\
- {print $1,oldv[ent,$1]-$2,oldv[ent,$1],$2,"|"ent}' |\
+ {old=(((ent,$1) in oldv)?oldv[ent,$1]:0);print $1,old-$2,old,$2,"|"ent}' |\
 sort -k2g |\
 awk -v noise=$noise '$2<0 && $4>noise' |\
 tee badgeo.txt |\
