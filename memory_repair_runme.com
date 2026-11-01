@@ -3,15 +3,18 @@
 #  put back residue conformers that have crept out of density, taking them from the
 #  remembered model whose position the current difference map likes best
 #
-#  usage: memory_repair_runme.com model.pdb model.mtz memory1.pdb [memory2.pdb ...] [mapnoise=3.5] [outfile=repaired.pdb]
+#  usage: memory_repair_runme.com model.pdb model.mtz memory1.pdb [memory2.pdb ...] [mapnoise=3.5] [waters=1] [outfile=repaired.pdb]
 #
 #  An atom of model.pdb has "crept" if the mFo-DFc map (FOFCWT of model.mtz, in sigma) is below -mapnoise at it,
 #  while at the same atom of a remembered model it is above -mapnoise and at least 1 sigma higher.  This is the
 #  rectified-SA revert test, but against every remembered model instead of only the start of the current round,
 #  so an atom that slid out of density a little at a time is still caught.  The whole residue conformer is copied
 #  back from the remembered model the map likes best at its most negative crept atom.  Hydrogens do not trigger.
+#  waters=0: waters do not trigger.  Use it when the rSA water hold keeps them in place: the hold's label-free reset puts a
+#  restored water straight back, and a water pair whose A/B letters swapped looks like a 1 A creep to this letter-matched test.
 #
 set mapnoise = 3.5
+set waters = 1
 set outfile = repaired.pdb
 set pdbfile = ""
 set mtzfile = ""
@@ -25,6 +28,7 @@ foreach Arg ( $* )
     set Val = `echo $Arg | awk '{print substr($0,index($0,"=")+1)}'`
     if( "$Arg" =~ *=* ) then
         if( "$Key" == "mapnoise" ) set mapnoise = "$Val"
+        if( "$Key" == "waters" ) set waters = "$Val"
         if( "$Key" == "outfile" ) set outfile = "$Val"
         if( "$Key" == "debug" ) set debug = "$Val"
         if( "$Key" == "tempfile" ) set tempfile = "$Val"
@@ -41,7 +45,7 @@ foreach Arg ( $* )
 end
 
 if( ! -e "$pdbfile" || ! -e "$mtzfile" || "$memories" == "" ) then
-    set BAD = "usage: $0 model.pdb model.mtz memory1.pdb [memory2.pdb ...] [mapnoise=$mapnoise] [outfile=$outfile]"
+    set BAD = "usage: $0 model.pdb model.mtz memory1.pdb [memory2.pdb ...] [mapnoise=$mapnoise] [waters=$waters] [outfile=$outfile]"
     goto exit
 endif
 
@@ -75,12 +79,13 @@ wait
 
 # crept atoms, the remembered model the map likes best for each, and one source per residue conformer
 cat ${t}rho_*.txt |\
-awk -F "|" -v model=$pdbfile -v noise=$mapnoise 'BEGIN{red=-sqrt(noise*noise)}\
+awk -F "|" -v model=$pdbfile -v noise=$mapnoise -v waters=$waters 'BEGIN{red=-sqrt(noise*noise)}\
   {ent=$1;split($2,v," ");rho=v[1]+0;el=v[2];src=v[3]}\
   src==model{new[ent]=rho;elem[ent]=el;next}\
   ! (ent in best) || rho>best[ent]{best[ent]=rho;from[ent]=src}\
   END{for(ent in new){\
      if(elem[ent]=="H" || ! (ent in best)) continue;\
+     if(! waters && ent ~ / (HOH|WAT) /) continue;\
      if(new[ent]<red && best[ent]>red && best[ent]-new[ent]>1) print new[ent],best[ent],from[ent],"|" ent}}' |\
 sort -g |\
 awk -F "|" '{ent=$2;key=substr(ent,7,1) substr(ent,14,1) substr(ent,16,5);split($1,v," ")}\

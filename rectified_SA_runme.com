@@ -585,8 +585,11 @@ set candR = `tail -n 1 eligible.txt | awk '{print $5, $6}'`
 if( $memory ) then
   # put back residue conformers that have crept out of density since an earlier, remembered model
   echo "checking the winner against `ls -1 memory/round*.pdb | wc -l` remembered models"
+  # held waters cannot creep, and the hold's reset would undo a restore
+  set repair_waters = 1
+  if( $hold ) set repair_waters = 0
   memory_repair_runme.com ${bestphenix}.pdb ${bestphenix}.mtz memory/round*.pdb \
-     mapnoise=$mapnoise outfile=repair_${round}.pdb >&! repair_${round}.log
+     mapnoise=$mapnoise waters=$repair_waters outfile=repair_${round}.pdb >&! repair_${round}.log
   grep -E '^restore|^ERROR' repair_${round}.log
   set nrestore = `awk '/^restored residue-conformers:/{print $NF}' repair_${round}.log`
   if( "$nrestore" != "" && "$nrestore" != "0" ) then
