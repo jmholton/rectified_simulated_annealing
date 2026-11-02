@@ -6,6 +6,9 @@
 set seed = 1
 set temperature = 300
 set final_wxc = 0.5
+# each iteration's refinement: 1 = weight snap (wxc_scale 1, 10, 0.1, then final_wxc; 3+5+5+5 cycles), 0 = one refinement at
+# final_wxc with the same 18 cycles.  Swinging the weight pulls a highly tangled model's geometry or fit apart
+set weight_snap = 1
 set local_flag = ""
 set temperatures = ""
 set nseeds = 10
@@ -220,6 +223,7 @@ foreach itr ( 1 2 3 4 5 )
 
 echo "refine $itr"
 if( $hold ) reset_waters_runme.com water_reference.pdb new.pdb labels=$water_labels
+if( $weight_snap ) then
 phenix.refine refme.mtz new.pdb adp.set_b_iso=20 opts.eff $holdwat $ciffiles \
   wxc_scale=1 \
   main.number_of_macro_cycles=3 \
@@ -242,6 +246,14 @@ phenix.refine refme.mtz phenix_003.pdb opts.eff $holdwat $ciffiles \
   wxc_scale=${final_wxc} \
   main.number_of_macro_cycles=5 \
   prefix=phenix serial=4 >! phenix_${itr}_4.log
+
+else
+echo "refine wxc_scale=${final_wxc}"
+phenix.refine refme.mtz new.pdb adp.set_b_iso=20 opts.eff $holdwat $ciffiles \
+  wxc_scale=${final_wxc} \
+  main.number_of_macro_cycles=18 \
+  prefix=phenix serial=4 >! phenix_${itr}_4.log
+endif
 
 set num = 004
 
@@ -540,7 +552,7 @@ foreach s ( `seq 1 $nseeds` )
 @ seed = ( $seed + 1 )
 
 $srun ./rectified_SA_runme.com seed=$seed temperature=$temperature \
-   noise=$noise mapnoise=$mapnoise cbsigma=$cbsigma water_sigma=$water_sigma water_labels=$water_labels final_wxc=$final_wxc debug=$debug >! logs/trial_${temperature}K_${seed}.log &
+   noise=$noise mapnoise=$mapnoise cbsigma=$cbsigma water_sigma=$water_sigma water_labels=$water_labels final_wxc=$final_wxc weight_snap=$weight_snap debug=$debug >! logs/trial_${temperature}K_${seed}.log &
 
 sleep 0.5
 
