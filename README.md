@@ -72,6 +72,19 @@ memory_repair_runme.com model.pdb model.mtz memory/round*.pdb mapnoise=3.5 outfi
 ```
 
 
+### Fragment flips (`fragflip=1`)
+
+Simulated annealing rarely relabels a long stretch of chain coherently, and the rectifier hands partial relabels back, so a model whose A/B labels are wrong in whole blocks stalls. With `fragflip=1` the parent runs `swap_fragments.py` on each round's start (in `flips/round<N>/`):
+
+- **fragments:** every heavy-atom bond gets the summed residual of all restraints containing it (A and B copies). A bond is cut where that strain is above `cut` (a label crossover) or where exchanging the letters on one side costs less than `hinge` extra (A and B coincide, so geometry cannot tell the pairings apart). The connected pieces, disulfides included, are swap-together fragments; each water is its own unit.
+- **deduction:** nonbonded overlaps above `clash` between two units say "flip one relative to the other" (same letters clash now) or "keep" (a flip would make them clash), combined strongest first with union-find.
+- **flip models:** the deduced flips, each free component flipped alone, and each two components that meet at a cut flipped together.
+
+Every flip model runs as an extra trial at 0 K: no annealing, the usual refinement and rectifier, judged against its own flipped start (`fresh_start=1`), and it competes with the annealing trials under the same Rfree gate and wE. Settings pass through `fragargs` (comma-separated, defaults `cut=25,hinge=40,clash=0.6,sym=0`, from a scan on 1aho). The analyzer also runs on its own:
+```
+phenix.python swap_fragments.py model.pdb singles=1 pairs=1 prefix=flip
+```
+
 
 ## Help
 

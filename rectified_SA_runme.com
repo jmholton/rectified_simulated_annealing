@@ -30,6 +30,16 @@ set water_sigma = 0.1
 # free: the reference holds the water SITES, and each split water takes whichever A/B labelling clashes least with its current
 # neighbours (a held water whose letter disagrees with a tangled neighbour otherwise pins that clash); same: hold the letters too
 set water_labels = free
+# fragment flips (fragflip=1): each round, swap_fragments.py (this repo; phenix.python and phenix.pdb_interpretation from PATH) splits
+# the round's start into swap-together fragments (bonds cut where a restraint crossover strains them or where A and B coincide),
+# deduces relative flips from clashes, and writes flip models: the deduced flips, each free component flipped alone, and each two
+# adjacent components flipped together.  Every flip model runs as an extra trial at 0 K (no annealing; the same refinement and
+# rectifier, judged against its own flipped start) and competes with the annealing trials by the same Rfree gate and wE.
+# fragargs: extra swap_fragments.py settings, comma-separated (e.g. fragargs=cut=25,hinge=40,clash=0.6)
+set fragflip = 0
+set fragargs = ""
+# a trial whose start is not the round's start (a flip model) scores its own start instead of copying the round's scores
+set fresh_start = 0
 
 set pdbfile = starthere.pdb
 set mtzfile = refme.mtz
@@ -89,6 +99,7 @@ endif
 
 set dependencies = ( molprobify_runme.com combine_pdbs_runme.com reset_waters_runme.com )
 if( $parallel && $memory ) set dependencies = ( $dependencies memory_repair_runme.com )
+if( $parallel && $fragflip ) set dependencies = ( $dependencies swap_fragments.py phenix.python phenix.pdb_interpretation )
 foreach dependency ( $dependencies )
   echo -n "using: "
   which $dependency 
@@ -136,7 +147,11 @@ set local_tempdir = /dev/shm/${USER}/temp_SA_$$_
 if( $debug < 5 ) then
     mkdir -p $local_tempdir
     cp opts.eff  $local_tempdir >& /dev/null
-    cp starthere_*.* $local_tempdir >& /dev/null
+    if( ! $fresh_start ) cp starthere_*.* $local_tempdir >& /dev/null
+    if( -e ${pdbfile:r}.txt ) then
+      echo -n "start: $pdbfile = "
+      cat ${pdbfile:r}.txt
+    endif
     cp *.cif $local_tempdir >& /dev/null
     cp overrides.txt $local_tempdir >& /dev/null
     cp water_reference.pdb $local_tempdir >& /dev/null
@@ -203,6 +218,8 @@ EOF
   reset_waters_runme.com water_reference.pdb starthere.pdb labels=$water_labels
 endif
 
+set anneal = `echo $temperature | awk '{print ( $1+0 > 0 )}'`
+if( $anneal ) then
 echo "runing simulated annealing in phenix"
 phenix.refine opts.eff $holdwat refme.mtz starthere.pdb $ciffiles \
  simulated_annealing.random_seed=$seed \
@@ -218,6 +235,10 @@ if( $status || ! -e simanneal_001.pdb) then
 endif
 
 cp simanneal_001.pdb new.pdb
+else
+  echo "0 K: no simulated annealing, refining the start as given"
+  cp starthere.pdb new.pdb
+endif
 
 foreach itr ( 1 2 3 4 5 )
 
@@ -546,6 +567,21 @@ if ( $#temperatures <= 1 ) then
   echo "using default temperatures: $temperatures"
 endif
 
+set fliplist = ""
+if( $fragflip ) then
+  # in its own directory: the analyzer keeps its .geo files next to the model and would reuse a stale one
+  mkdir -p flips/round${round}
+  cp starthere.pdb flips/round${round}/start.pdb
+  set fargs = `echo $fragargs | awk '{gsub(","," ");print}'`
+  # next to this script, else from PATH (a run usually starts from a copy of this script in its own directory)
+  set swapfrag = $RSA_HOME/swap_fragments.py
+  if( ! -e $swapfrag ) set swapfrag = `which swap_fragments.py`
+  ( cd flips/round${round} ; phenix.python $swapfrag start.pdb singles=1 pairs=1 $fargs prefix=f >&! analyze.log )
+  set fliplist = `ls -1 flips/round${round}/f_*.pdb |& grep pdb$`
+  echo "fragment flips: $#fliplist models (flips/round${round}/analyze.log)"
+  grep -E "^fragments|^components|^nonbonded" flips/round${round}/analyze.log
+endif
+
 foreach temperature ( $temperatures )
 
 foreach s ( `seq 1 $nseeds` )
@@ -557,6 +593,15 @@ $srun ./rectified_SA_runme.com seed=$seed temperature=$temperature \
 sleep 0.5
 
 end
+end
+
+foreach flip ( $fliplist )
+@ seed = ( $seed + 1 )
+
+$srun ./rectified_SA_runme.com seed=$seed temperature=0 pdbfile=$flip fresh_start=1 \
+   noise=$noise mapnoise=$mapnoise cbsigma=$cbsigma water_sigma=$water_sigma water_labels=$water_labels final_wxc=$final_wxc weight_snap=$weight_snap debug=$debug >! logs/trial_0K_${seed}.log &
+
+sleep 0.5
 end
 wait
 
